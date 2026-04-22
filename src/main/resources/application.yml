@@ -1,0 +1,30 @@
+server:
+  port: 8080
+
+nifi:
+  base-url: https://localhost:8443/nifi-api
+  username: admin
+  password: Admin@123456
+  root-group-id: b3d5fbbb-019d-1000-a114-e25761bfb726
+
+flow:
+  scheduling:
+    query: 5 sec
+
+  dbcp:
+    driverClass: com.mysql.cj.jdbc.Driver
+    driverLocation: C:\mysql\mysql-connector-j-9.6.0.jar
+    url: jdbc:mysql://localhost:3306/nifi_test
+    user: root
+    password: Abcd@230992
+
+  mongo:
+    uri: mongodb+srv://cluster0.xd6plgg.mongodb.net/?appName=Cluster0
+    user: venkateshwar2122
+    password: MyStrongPass123
+    db: nifi_test
+    collection: users
+
+  query:
+    table: users
+    pk: id
