@@ -4,7 +4,9 @@ public class FlowRequest {
 
     private String name;
 
-    public FlowRequest() {}
+    // Default constructor (REQUIRED)
+    public FlowRequest() {
+    }
 
     public FlowRequest(String name) {
         this.name = name;

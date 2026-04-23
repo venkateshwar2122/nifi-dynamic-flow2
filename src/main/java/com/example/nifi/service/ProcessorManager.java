@@ -2,10 +2,14 @@ package com.example.nifi.service;
 
 import com.example.nifi.client.NiFiClient;
 import com.example.nifi.config.FlowProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 @Service
 public class ProcessorManager {
+
+    private static final Logger log = LoggerFactory.getLogger(ProcessorManager.class);
 
     private final NiFiClient client;
     private final FlowProperties flow;
@@ -15,63 +19,124 @@ public class ProcessorManager {
         this.flow = flow;
     }
 
-    public String createQueryProcessor(String token, String pgId, String dbcpId, String writerId) {
+    // =========================
+    // QUERY PROCESSOR
+    // =========================
+    public String createQueryProcessor(
+            String token,
+            String pgId,
+            String dbcpId,
+            String writerId) {
 
-        String processorId = client.createProcessor(
-                token,
-                pgId,
-                "org.apache.nifi.processors.standard.QueryDatabaseTableRecord"
-        );
+        try {
+            log.info("🔧 Creating QueryDatabaseTableRecord processor...");
 
-        int version = client.getVersion(token, processorId, "processors");
+            String id = client.createProcessor(
+                    token,
+                    pgId,
+                    "org.apache.nifi.processors.standard.QueryDatabaseTableRecord"
+            );
 
-        String props = """
-        {
-          "Database Connection Pooling Service": "%s",
-          "Table Name": "%s",
-          "Record Writer": "%s",
-          "Maximum-value Columns": "%s"
+            log.info("📌 Query Processor created with ID={}", id);
+
+            int version = client.getVersion(token, id, "processors");
+
+            String props = """
+            {
+              "Database Connection Pooling Service": "%s",
+              "Table Name": "%s",
+              "Record Writer": "%s",
+              "Maximum-value Columns": "%s"
+            }
+            """.formatted(
+                    dbcpId,
+                    flow.getQuery().getTable(),
+                    writerId,
+                    flow.getQuery().getPk()
+            );
+
+            // 🔥 Auto terminate
+            String relationships = "[\"failure\"]";
+
+            log.info("⚙️ Updating Query Processor configuration...");
+
+            client.updateProcessorFull(
+                    token,
+                    id,
+                    version,
+                    props,
+                    flow.getScheduling().getQuery(),
+                    relationships
+            );
+
+            log.info("✅ Query Processor configured successfully: {}", id);
+
+            return id;
+
+        } catch (Exception e) {
+            log.error("❌ Failed to create Query Processor", e);
+            throw new RuntimeException("Query Processor creation failed", e);
         }
-        """.formatted(
-                dbcpId,
-                flow.query.table,
-                writerId,
-                flow.query.pk
-        );
-
-        client.updateProcessor(token, processorId, version, props, flow.scheduling.query, "[]");
-
-        return processorId;
     }
 
-    public String createPutMongoProcessor(String token, String pgId, String mongoServiceId, String readerId) {
+    // =========================
+    // PUT MONGO PROCESSOR
+    // =========================
+    public String createPutMongoProcessor(
+            String token,
+            String pgId,
+            String mongoId,
+            String readerId) {
 
-        String processorId = client.createProcessor(
-                token,
-                pgId,
-                "org.apache.nifi.processors.mongodb.PutMongoRecord"
-        );
+        try {
+            log.info("🔧 Creating PutMongoRecord processor...");
 
-        int version = client.getVersion(token, processorId, "processors");
+            String id = client.createProcessor(
+                    token,
+                    pgId,
+                    "org.apache.nifi.processors.mongodb.PutMongoRecord"
+            );
 
-        String props = """
-        {
-          "Client Service": "%s",
-          "Mongo Database Name": "%s",
-          "Mongo Collection Name": "%s",
-          "Record Reader": "%s",
-          "Update Key Fields": "%s"
+            log.info("📌 PutMongo Processor created with ID={}", id);
+
+            int version = client.getVersion(token, id, "processors");
+
+            String props = """
+            {
+              "Client Service": "%s",
+              "Mongo Database Name": "%s",
+              "Mongo Collection Name": "%s",
+              "Record Reader": "%s",
+              "Update Key Fields": "%s"
+            }
+            """.formatted(
+                    mongoId,
+                    flow.getMongo().getDb(),
+                    flow.getMongo().getCollection(),
+                    readerId,
+                    flow.getQuery().getPk()
+            );
+
+            String relationships = "[\"failure\", \"success\"]";
+
+            log.info("⚙️ Updating PutMongo Processor configuration...");
+
+            client.updateProcessorFull(
+                    token,
+                    id,
+                    version,
+                    props,
+                    "0 sec",
+                    relationships
+            );
+
+            log.info("✅ PutMongo Processor configured successfully: {}", id);
+
+            return id;
+
+        } catch (Exception e) {
+            log.error("❌ Failed to create PutMongo Processor", e);
+            throw new RuntimeException("PutMongo Processor creation failed", e);
         }
-        """.formatted(
-                mongoServiceId,
-                flow.mongo.db,
-                flow.mongo.collection,
-                readerId,
-                flow.query.pk
-        );
-
-        client.updateProcessor(token, processorId, version, props, "0 sec", "[]");
-
-        return processorId;
     }
 }

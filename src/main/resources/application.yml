@@ -13,7 +13,7 @@ flow:
 
   dbcp:
     driverClass: com.mysql.cj.jdbc.Driver
-    driverLocation: C:\mysql\mysql-connector-j-9.6.0.jar
+    driverLocation: /opt/nifi/lib/mysql-connector-j-9.4.0.jar
     url: jdbc:mysql://localhost:3306/nifi_test
     user: root
     password: Abcd@230992

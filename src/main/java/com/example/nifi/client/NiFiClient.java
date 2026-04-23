@@ -1,8 +1,9 @@
 package com.example.nifi.client;
-
 import com.example.nifi.config.NiFiProperties;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.*;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
@@ -11,6 +12,8 @@ import org.springframework.util.MultiValueMap;
 
 @Component
 public class NiFiClient {
+
+    private static final Logger log = LoggerFactory.getLogger(NiFiClient.class);
 
     private final RestTemplate restTemplate;
     private final NiFiProperties props;
@@ -21,22 +24,31 @@ public class NiFiClient {
         this.props = props;
     }
 
-    // 🔐 TOKEN
+    // ================= TOKEN =================
     public String getToken() {
-    String url = props.getBaseUrl() + "/access/token";
+        try {
+            log.info("🔐 Fetching NiFi token...");
 
-    MultiValueMap<String, String> body = new LinkedMultiValueMap<>();
-    body.add("username", props.getUsername());
-    body.add("password", props.getPassword());
+            String url = props.getBaseUrl() + "/access/token";
 
-    HttpHeaders headers = new HttpHeaders();
-    headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
+            MultiValueMap<String, String> body = new LinkedMultiValueMap<>();
+            body.add("username", props.getUsername());
+            body.add("password", props.getPassword());
 
-    HttpEntity<MultiValueMap<String, String>> request =
-            new HttpEntity<>(body, headers);
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
 
-    return restTemplate.postForObject(url, request, String.class);
-}
+            String token = restTemplate.postForObject(
+                    url, new HttpEntity<>(body, headers), String.class);
+
+            log.info("✅ Token fetched successfully");
+            return token;
+
+        } catch (Exception e) {
+            log.error("❌ Failed to fetch token", e);
+            throw new RuntimeException("NiFi token fetch failed", e);
+        }
+    }
 
     private HttpHeaders headers(String token) {
         HttpHeaders h = new HttpHeaders();
@@ -45,224 +57,244 @@ public class NiFiClient {
         return h;
     }
 
-    // 📁 CREATE PG
-    public String createPG(String token, String rootId, String name) {
-        String body = """
-        {
-          "revision":{"version":0},
-          "component":{"name":"%s"}
-        }
-        """.formatted(name);
-
-        String res = restTemplate.postForObject(
-            props.getBaseUrl() + "/process-groups/" + rootId + "/process-groups",
-            new HttpEntity<>(body, headers(token)),
-            String.class
-        );
-
-        return extractId(res);
-    }
-
-    // 🧠 COMMON METHODS
-    private String extractId(String res) {
+    // ================= COMMON =================
+    private String extractId(String response) {
         try {
-            return mapper.readTree(res).get("component").get("id").asText();
+            JsonNode node = mapper.readTree(response);
+
+            if (node == null || node.get("component") == null) {
+                throw new RuntimeException("Invalid NiFi response: " + response);
+            }
+
+            return node.get("component").get("id").asText();
+
         } catch (Exception e) {
-            throw new RuntimeException(e);
+            log.error("❌ Failed to extract ID", e);
+            throw new RuntimeException("ID extraction failed", e);
         }
     }
 
     public int getVersion(String token, String id, String type) {
         try {
             String res = restTemplate.exchange(
-                props.getBaseUrl() + "/" + type + "/" + id,
-                HttpMethod.GET,
-                new HttpEntity<>(headers(token)),
-                String.class
-            ).getBody();
-
-            return mapper.readTree(res).get("revision").get("version").asInt();
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    // 🔧 CREATE CONTROLLER SERVICE
-    public String createCS(String token, String pgId, String type) {
-        String body = """
-        {
-          "revision":{"version":0},
-          "component":{"type":"%s"}
-        }
-        """.formatted(type);
-
-        String res = restTemplate.postForObject(
-            props.getBaseUrl() + "/process-groups/" + pgId + "/controller-services",
-            new HttpEntity<>(body, headers(token)),
-            String.class
-        );
-
-        return extractId(res);
-    }
-
-    // 🔧 UPDATE SERVICE
-    public void updateCS(String token, String id, int version, String propsJson) {
-        String body = """
-        {
-          "revision":{"version":%d},
-          "component":{"id":"%s","properties":%s}
-        }
-        """.formatted(version, id, propsJson);
-
-        restTemplate.exchange(
-            props.getBaseUrl() + "/controller-services/" + id,
-            HttpMethod.PUT,
-            new HttpEntity<>(body, headers(token)),
-            String.class
-        );
-    }
-
-    // 🔍 VERIFY
-    public String verify(String token, String id, String propsJson) {
-        String body = """
-        { "properties": %s }
-        """.formatted(propsJson);
-
-        String res = restTemplate.postForObject(
-            props.getBaseUrl() + "/controller-services/" + id + "/config/verification-requests",
-            new HttpEntity<>(body, headers(token)),
-            String.class
-        );
-
-        try {
-            return mapper.readTree(res).get("request").get("requestId").asText();
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    // 🔁 POLL
-    public boolean poll(String token, String id, String reqId) {
-        try {
-            while (true) {
-                String res = restTemplate.exchange(
-                    props.getBaseUrl() + "/controller-services/" + id + "/config/verification-requests/" + reqId,
+                    props.getBaseUrl() + "/" + type + "/" + id,
                     HttpMethod.GET,
                     new HttpEntity<>(headers(token)),
                     String.class
-                ).getBody();
+            ).getBody();
 
-                JsonNode json = mapper.readTree(res);
+            return mapper.readTree(res)
+                    .get("revision")
+                    .get("version")
+                    .asInt();
 
-                if (json.get("request").get("complete").asBoolean()) {
-                    String outcome = json.get("request")
-                            .get("results").get(0)
-                            .get("outcome").asText();
-
-                    return outcome.equalsIgnoreCase("SUCCESSFUL");
-                }
-
-                Thread.sleep(1000);
-            }
         } catch (Exception e) {
+            log.error("❌ Failed to fetch version for {}", id, e);
+            throw new RuntimeException("Version fetch failed", e);
+        }
+    }
+
+    // ================= PROCESS GROUP =================
+    public String createPG(String token, String rootId, String name) {
+        try {
+            log.info("📁 Creating Process Group: {}", name);
+
+            String body = """
+            {"revision":{"version":0},"component":{"name":"%s"}}
+            """.formatted(name);
+
+            String res = restTemplate.postForObject(
+                    props.getBaseUrl() + "/process-groups/" + rootId + "/process-groups",
+                    new HttpEntity<>(body, headers(token)),
+                    String.class
+            );
+
+            String id = extractId(res);
+            log.info("✅ Process Group created: {}", id);
+
+            return id;
+
+        } catch (Exception e) {
+            log.error("❌ Failed to create Process Group", e);
+            throw new RuntimeException("Create PG failed", e);
+        }
+    }
+
+    // ================= CONTROLLER SERVICE =================
+    public String createCS(String token, String pgId, String type) {
+        try {
+            log.info("⚙️ Creating Controller Service: {}", type);
+
+            String body = """
+            {"revision":{"version":0},"component":{"type":"%s"}}
+            """.formatted(type);
+
+            String res = restTemplate.postForObject(
+                    props.getBaseUrl() + "/process-groups/" + pgId + "/controller-services",
+                    new HttpEntity<>(body, headers(token)),
+                    String.class
+            );
+
+            return extractId(res);
+
+        } catch (Exception e) {
+            log.error("❌ Failed to create Controller Service", e);
             throw new RuntimeException(e);
         }
     }
 
-    // ⚡ ENABLE SERVICE
+    public void updateCS(String token, String id, int version, String propsJson) {
+    try {
+        log.info("🔧 Updating Controller Service: {}", id);
+
+        String body = """
+        {
+          "revision": { "version": %d },
+          "component": {
+            "id": "%s",
+            "properties": %s
+          }
+        }
+        """.formatted(version, id, propsJson);
+
+        log.info("📦 CS UPDATE BODY: {}", body);
+
+        restTemplate.exchange(
+                props.getBaseUrl() + "/controller-services/" + id,
+                HttpMethod.PUT,
+                new HttpEntity<>(body, headers(token)),
+                String.class
+        );
+
+    } catch (Exception e) {
+        log.error("❌ Failed to update Controller Service {}", id, e);
+        throw new RuntimeException(e);
+    }
+}
+
     public void enable(String token, String id, int version) {
+        try {
+            log.info("⚡ Enabling Controller Service: {}", id);
+
+            String body = """
+            {"revision":{"version":%d},"state":"ENABLED"}
+            """.formatted(version);
+
+            restTemplate.exchange(
+                    props.getBaseUrl() + "/controller-services/" + id + "/run-status",
+                    HttpMethod.PUT,
+                    new HttpEntity<>(body, headers(token)),
+                    String.class
+            );
+
+        } catch (Exception e) {
+            log.error("❌ Failed to enable service {}", id, e);
+            throw new RuntimeException(e);
+        }
+    }
+
+    // ================= PROCESSOR =================
+    public String createProcessor(String token, String pgId, String type) {
+        try {
+            log.info("🔧 Creating Processor: {}", type);
+
+            String body = """
+            {"revision":{"version":0},"component":{"type":"%s","position":{"x":0.0,"y":0.0}}}
+            """.formatted(type);
+
+            String res = restTemplate.postForObject(
+                    props.getBaseUrl() + "/process-groups/" + pgId + "/processors",
+                    new HttpEntity<>(body, headers(token)),
+                    String.class
+            );
+
+            return extractId(res);
+
+        } catch (Exception e) {
+            log.error("❌ Failed to create processor", e);
+            throw new RuntimeException(e);
+        }
+    }
+
+    public void updateProcessorFull(String token, String id, int version,
+                                String propertiesJson, String schedule, String rel) {
+    try {
+        log.info("⚙️ Updating Processor: {}", id);
+
         String body = """
         {
           "revision":{"version":%d},
-          "state":"ENABLED"
+          "component":{
+            "id":"%s",
+            "config":{
+              "properties":%s,
+              "schedulingPeriod":"%s",
+              "autoTerminatedRelationships":%s
+            }
+          }
         }
-        """.formatted(version);
+        """.formatted(version, id, propertiesJson, schedule, rel);
 
         restTemplate.exchange(
-            props.getBaseUrl() + "/controller-services/" + id + "/run-status",
-            HttpMethod.PUT,
-            new HttpEntity<>(body, headers(token)),
-            String.class
+                props.getBaseUrl() + "/processors/" + id,
+                HttpMethod.PUT,
+                new HttpEntity<>(body, headers(token)),
+                String.class
         );
-    }
 
-    public String createProcessor(String token, String pgId, String type) {
-
-    String body = """
-    {
-      "revision":{"version":0},
-      "component":{
-        "type":"%s",
-        "position":{"x":0.0,"y":0.0}
-      }
-    }
-    """.formatted(type);
-
-    String res = restTemplate.postForObject(
-        props.getBaseUrl() + "/process-groups/" + pgId + "/processors",
-        new HttpEntity<>(body, headers(token)),
-        String.class
-    );
-
-    return extractId(res);
-   }
-
-
-   public void updateProcessor(String token,
-                            String id,
-                            int version,
-                            String propertiesJson,
-                            String schedule,
-                            String autoTerminate) {
-
-    String body = """
-    {
-      "revision":{"version":%d},
-      "component":{
-        "id":"%s",
-        "config":{
-          "properties": %s,
-          "schedulingPeriod": "%s",
-          "autoTerminatedRelationships": %s
-        }
-      }
-    }
-    """.formatted(version, id, propertiesJson, schedule, autoTerminate);
-
-    restTemplate.exchange(
-        props.getBaseUrl() + "/processors/" + id,
-        HttpMethod.PUT,
-        new HttpEntity<>(body, headers(token)),
-        String.class
-    );
-}
-public void connect(String token, String pgId, String sourceId, String destId) {
-
-    String body = """
-    {
-      "revision":{"version":0},
-      "component":{
-        "source":{"id":"%s","type":"PROCESSOR"},
-        "destination":{"id":"%s","type":"PROCESSOR"},
-        "selectedRelationships":["success"]
-      }
-    }
-    """.formatted(sourceId, destId);
-
-    restTemplate.postForObject(
-        props.getBaseUrl() + "/process-groups/" + pgId + "/connections",
-        new HttpEntity<>(body, headers(token)),
-        String.class
-    );
-}
-
-private String safePost(String url, HttpEntity<?> entity) {
-    try {
-        return restTemplate.postForObject(url, entity, String.class);
     } catch (Exception e) {
-        System.out.println("❌ ERROR: " + e.getMessage());
-        throw e;
+        log.error("❌ Failed to update processor {}", id, e);
+        throw new RuntimeException(e);
     }
-}
+    }
 
+    // ================= CONNECTION =================
+    public void connect(String token, String pgId, String src, String dest) {
+        try {
+            log.info("🔗 Connecting processors");
+
+            String body = """
+            {
+              "revision":{"version":0},
+              "component":{
+                "parentGroupId":"%s",
+                "source":{"id":"%s","type":"PROCESSOR","groupId":"%s"},
+                "destination":{"id":"%s","type":"PROCESSOR","groupId":"%s"},
+                "selectedRelationships":["success"]
+              }
+            }
+            """.formatted(pgId, src, pgId, dest, pgId);
+
+            restTemplate.postForObject(
+                    props.getBaseUrl() + "/process-groups/" + pgId + "/connections",
+                    new HttpEntity<>(body, headers(token)),
+                    String.class
+            );
+
+        } catch (Exception e) {
+            log.error("❌ Failed to connect processors", e);
+            throw new RuntimeException(e);
+        }
+    }
+
+    public void controlProcessGroup(String token, String pgId, String state) {
+        try {
+            log.info("▶️ Changing PG state to {}", state);
+
+            String body = """
+            {"id":"%s","state":"%s"}
+            """.formatted(pgId, state);
+
+            restTemplate.exchange(
+                    props.getBaseUrl() + "/flow/process-groups/" + pgId,
+                    HttpMethod.PUT,
+                    new HttpEntity<>(body, headers(token)),
+                    String.class
+            );
+
+        } catch (Exception e) {
+            log.error("❌ Failed to control process group", e);
+            throw new RuntimeException(e);
+        }
+    }
 }
